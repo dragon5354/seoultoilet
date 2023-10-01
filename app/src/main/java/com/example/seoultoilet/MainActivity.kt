@@ -4,8 +4,11 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.drawable.BitmapDrawable
 import android.location.Location
 import android.location.LocationManager
+import android.os.AsyncTask
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import android.widget.TextView
@@ -16,7 +19,12 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.MapView
+import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.MarkerOptions
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.URL
 
 
 class MainActivity : AppCompatActivity() {
@@ -163,14 +171,6 @@ class MainActivity : AppCompatActivity() {
 
 
     // 하단부터 맵뷰의 라이프사이클 함수 호출을 위한 코드들
-    override fun onStart() {
-        super.onStart()
-        mapView.onStart()
-    }
-    override fun onStop() {
-        super.onStop()
-        mapView.onStop()
-    }
     override fun onResume() {
         super.onResume()
         mapView.onResume()
@@ -186,5 +186,124 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         mapView.onDestroy()
         super.onDestroy()
+    }
+
+    /**
+     *  공공데이터 연동 관련
+     */
+    // 서울 열린 데이터 광장 API 키
+    val API_KEY = "7a676c44756472613130346a6c6a4575"
+
+    // 앱이 비활성화될 때 백그라운드 작업도 취소하기 위한 변수선언
+    var task: ToiletReadTask? = null
+
+    // 서울시 화장실 정보 집합을 저장할 Array 변수
+    var toilets = JSONArray()
+
+    // 화장실 이미지로 사용할 Bitmap
+    val bitmap by lazy {
+        val drawable = resources.getDrawable(R.drawable.restroom_sign) as BitmapDrawable
+        Bitmap.createScaledBitmap(drawable.bitmap, 64, 64, false)
+    }
+
+    // JSONArray를 병합하기 위해 확장함수 사용
+    fun JSONArray.merge(anotherArray: JSONArray) {
+        for (i in 0 until anotherArray.length()) {
+            this.put(anotherArray.get(i))
+        }
+    }
+
+    // 화장실 정보를 읽어와 JSONObject로 반환하는 함수
+    fun readData(startIndex: Int, lastIndex: Int): JSONObject {
+        val url =
+            URL("http://openAPI.seoul.go.kr:8088/${API_KEY}/json/SearchPublicToiletPOIService/${startIndex}/${lastIndex}/")
+        val connection = url.openConnection()
+        val data = connection.getInputStream().readBytes().toString(charset("UTF-8"))
+        return JSONObject(data)
+    }
+
+    // 화장실 데이터를 읽어오는 AsyncTask
+    inner class ToiletReadTask : AsyncTask<Void, JSONArray, String>() {
+        // 데이터를 읽기 전에 기존 데이터 초기화
+        override fun onPreExecute() {
+            // 구글맵 마커 초기화
+            googleMap?.clear()
+            // 화장실 정보 초기화
+            toilets = JSONArray()
+//            itemMap.clear()
+        }
+
+        override fun doInBackground(vararg params: Void?): String {
+            // 서울시 데이터는 최대 1000개씩 가져올 수 있으므로, 여러 번 호출해야 함.
+            val step = 1000
+            var startIndex = 1
+            var lastIndex = step
+            var totalCount = 0
+
+            do {
+                // 백그라운드 작업이 취소된 경우 루프를 빠져나감
+                if (isCancelled) break
+                // totalCount가 0이 아닌 경우 값을 증가시켜, 다음 데이터를 가져오도록 함
+                if (totalCount != 0) {
+                    startIndex += step
+                    lastIndex += step
+                }
+
+                // 데이터 조회
+                val jsonObject = readData(startIndex, lastIndex)
+
+                // totalCount를 가져옴
+                totalCount = jsonObject.getJSONObject("SearchPublicToiletPOIService")
+                    .getInt("list_total_count")
+
+                // 화장실 정보 데이터 집합을 가져옴
+                val rows =
+                    jsonObject.getJSONObject("SearchPublicToiletPOIService").getJSONArray("row")
+
+                // 기존 데이터와 병합
+                toilets.merge(rows)
+
+                // UI 업데이트를 위해 progress 발행
+                publishProgress(rows)
+            } while (lastIndex < totalCount) // 데이터 다 가져올 때까지 반복
+            return "complete"
+        }
+
+        // 데이터를 읽어올때마다 중간중간 실행
+        override fun onProgressUpdate(vararg values: JSONArray?) {
+            // vararg는 JSONArray 파라미터를 가변적으로 전달하도록 하는 키워드, 인덱스 0의 데이터 사용
+            val array = values[0]
+            array?.let {
+                for (i in 0 until array.length()) {
+                    addMarker(array.getJSONObject(i))
+                }
+            }
+        }
+    }
+
+    // 앱이 활성화될때 서울시 데이터를 읽어옴
+    override fun onStart() {
+        super.onStart()
+        task?.cancel(true)
+        task = ToiletReadTask()
+        task?.execute()
+    }
+
+    // 앱이 비활성화될때 백그라운드 작업 취소
+    override fun onStop() {
+        super.onStop()
+        task?.cancel(true)
+        task = null
+    }
+
+    // 마커 추가
+    fun addMarker(toilet: JSONObject) {
+        googleMap?.addMarker(
+            MarkerOptions()
+                .position(LatLng(toilet.getDouble("Y_WGS84"), toilet.getDouble("X_WGS84")))
+                .title(toilet.getString("FNAME"))
+                .snippet(toilet.getString("ANAME"))
+                .icon(BitmapDescriptorFactory.fromBitmap(bitmap))
+        )
     }
 }

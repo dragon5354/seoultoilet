@@ -5,8 +5,12 @@
     <!-- 현재 위치 파악용 권한 요청 -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <!-- 인터넷 사용 권한 요청 -->
+    <uses-permission android:name="android.permission.INTERNET"/>
 
+    <!-- usesCleartextTraffic="true"로 설정해야 암호화되지 않은 일반 http 통신이 가능-->
     <application
+        android:usesCleartextTraffic="true"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
